@@ -9,8 +9,8 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Budget">
-<link rel="icon" href="icon.png?v=2">
-<link rel="apple-touch-icon" href="icon.png?v=2">
+<link rel="icon" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
 <link rel="manifest" href="manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -106,6 +106,11 @@ header.top{display:flex; align-items:center; justify-content:space-between; padd
 .goal-card .bar i{display:block;height:100%;width:0%;border-radius:99px;background:var(--pine);transition:width .8s cubic-bezier(.22,1,.36,1);}
 .goal-card .pct{font-family:'Bricolage Grotesque';font-weight:800;font-size:17px;color:var(--pine);font-variant-numeric:tabular-nums;}
 [data-theme="dark"] .goal-card .pct{color:#8FCBA8;}
+.acc-card{display:flex;align-items:center;gap:12px;background:var(--surface);border-radius:var(--r-md);padding:13px 16px;margin-bottom:8px;box-shadow:var(--shadow);}
+.acc-card .emoji{font-size:22px;}
+.acc-card .name{flex:1;font-weight:600;font-size:14.5px;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.acc-card .bal{font-family:'Bricolage Grotesque';font-weight:700;font-size:16px;font-variant-numeric:tabular-nums;}
+.acc-card .bal.neg{color:var(--brick);}
 
 /* charts */
 .chart-card{background:var(--surface);border-radius:var(--r-lg);padding:18px;box-shadow:var(--shadow);}
@@ -258,6 +263,9 @@ nav.bottom .tab.active{color:var(--pine);}
       <div id="goalList"></div>
     </div>
 
+    <div class="section-head"><h2>Vermogen</h2><span class="link" id="netWorth"></span></div>
+    <div id="accList"></div>
+
     <div class="section-head"><h2>Inzicht</h2></div>
     <div class="chart-card" id="chartCard">
       <div class="donut-wrap">
@@ -317,6 +325,11 @@ nav.bottom .tab.active{color:var(--pine);}
       </div>
     </div>
     <div class="card">
+      <h3>Rekeningen</h3><p class="hint">Saldo verandert mee met gelogde uitgaven en inkomsten. Klopt het niet meer? Pas het saldo hier gewoon aan.</p>
+      <div id="accRows"></div>
+      <button class="add-row" data-add="acc">+ rekening toevoegen</button>
+    </div>
+    <div class="card">
       <h3>Spaardoelen</h3><p class="hint">Sparen gaat van je vrije maandbudget af en telt op bij je doel.</p>
       <div id="goalRows"></div>
       <button class="add-row" data-add="goal">+ spaardoel toevoegen</button>
@@ -355,6 +368,7 @@ nav.bottom .tab.active{color:var(--pine);}
   <div class="split-line" id="splitLine"></div>
   <button class="split-btn" id="splitBtn">⇋ Gedeeld met Yente · ÷2</button>
   <div class="chips" id="envChips"></div>
+  <div class="chips" id="accChips"></div>
   <div class="quick" id="quickNotes"></div>
   <div class="mini-fields">
     <input type="text" id="noteInput" placeholder="Omschrijving (optioneel)" autocomplete="off">
@@ -393,6 +407,7 @@ const defaultState=()=>({
     {id:uid(),emoji:'🚋',name:'Vervoer',budget:50,ci:4}
   ],
   recurring:[],goals:[],rollover:false,
+  accounts:[{id:uid(),emoji:'🏦',name:'Zichtrekening',start:0}],
   startMonth:todayStr().slice(0,7),recDone:todayStr(),
   tx:[]
 });
@@ -402,6 +417,8 @@ if(!Array.isArray(S.tx))S.tx=[];
 S.tx.forEach(t=>{if(!t.kind)t.kind='out';});
 S.envelopes.forEach((e,i)=>{if(e.ci==null)e.ci=i%PAL.length;});
 S.recurring??=[];S.goals??=[];S.rollover??=false;
+S.accounts??=[{id:uid(),emoji:'🏦',name:'Zichtrekening',start:0}];
+if(!S.accounts.length)S.accounts.push({id:uid(),emoji:'🏦',name:'Zichtrekening',start:0});
 S.startMonth??=todayStr().slice(0,7);S.recDone??=todayStr();
 const save=()=>store.save(S);
 
@@ -429,6 +446,9 @@ const goalById=id=>S.goals.find(g=>g.id===id);
 const envStyle=e=>e?`--c-soft:${PAL[e.ci][0]};--c-strong:${PAL[e.ci][1]}`:'';
 const envSpent=(m,id)=>txInMonth(m).filter(t=>t.envId===id&&t.kind==='out').reduce((s,t)=>s+t.amount,0);
 const goalSaved=id=>S.tx.filter(t=>t.kind==='save'&&t.goalId===id).reduce((s,t)=>s+t.amount,0);
+const txAcc=t=>t.accountId||(S.accounts[0]&&S.accounts[0].id);
+const accDelta=id=>S.tx.reduce((s,t)=>txAcc(t)!==id?s:s+(t.kind==='in'?t.amount:t.kind==='out'?-t.amount:0),0);
+const accBalance=a=>(Number(a.start)||0)+accDelta(a.id);
 function effBudget(env,m){
   let b=Number(env.budget)||0;
   if(!S.rollover)return b;
@@ -534,6 +554,12 @@ function renderHome(){
     gl.appendChild(card);
     requestAnimationFrame(()=>requestAnimationFrame(()=>{card.querySelector('.bar i').style.width=Math.min(100,pct*100)+'%';}));
   });
+  const al=$('#accList');al.innerHTML='';let nw=0;
+  S.accounts.forEach(a=>{
+    const b=accBalance(a);nw+=b;
+    al.appendChild(el('div','acc-card',`<span class="emoji">${esc(a.emoji)}</span><span class="name">${esc(a.name)}</span><span class="bal${b<0?' neg':''}">${fmt(b)}</span>`));
+  });
+  $('#netWorth').textContent='Σ '+fmt(nw);
   renderCharts(m,T);
   const rec=$('#recentList');rec.innerHTML='';
   const recent=[...S.tx].sort((a,b)=>b.ts-a.ts).slice(0,4);
@@ -605,7 +631,8 @@ function txRow(t){
   const row=el('div','tx-row');
   const em=isIn?'↧':isSave?esc(goal?goal.emoji:'🎯'):esc(env?env.emoji:'💸');
   const cat=isIn?'Inkomst':isSave?('Sparen · '+esc(goal?goal.name:'doel')):(env?esc(env.name):'Overig');
-  const tags=(t.split?' · ½ gedeeld':'')+(t.rec?' · 🔁':'');
+  const acc=S.accounts.find(a=>a.id===txAcc(t));
+  const tags=(t.split?' · ½ gedeeld':'')+(t.rec?' · 🔁':'')+((S.accounts.length>1&&acc&&!isSave)?' · '+esc(acc.emoji):'');
   row.innerHTML=`<div class="em" style="${(isIn||isSave)?'':envStyle(env)}">${em}</div>
     <div class="info"><div class="t">${esc(t.note||(isIn?'Extra inkomst':isSave?'Gespaard':(env?env.name:'Overig')))}</div>
     <div class="c">${cat} · ${new Date(t.date+'T12:00').toLocaleDateString('nl-BE',{day:'numeric',month:'short'})}${tags}</div></div>
@@ -711,9 +738,32 @@ function renderSettings(){
     rr.appendChild(editorRow2(x));
   });
   const er=$('#envRows');er.innerHTML='';S.envelopes.forEach(x=>er.appendChild(editorRow(x,S.envelopes,{swatch:true,emoji:true,field:'budget'})));
+  const ar=$('#accRows');ar.innerHTML='';S.accounts.forEach(a=>ar.appendChild(accRow(a)));
   const gr=$('#goalRows');gr.innerHTML='';S.goals.forEach(x=>gr.appendChild(editorRow(x,S.goals,{emoji:true,field:'target'})));
   $('#rolloverToggle').checked=!!S.rollover;
   renderTotals();
+}
+function accRow(a){
+  const row=el('div','row-edit');
+  const em=el('input','emoji');em.value=a.emoji||'💳';em.maxLength=4;
+  em.addEventListener('input',()=>{a.emoji=em.value;save();renderHomeSoft();});
+  const name=el('input','name');name.value=a.name||'';name.placeholder='Naam';
+  name.addEventListener('input',()=>{a.name=name.value;save();renderHomeSoft();});
+  const num=el('input','num');num.type='text';num.inputMode='decimal';num.placeholder='saldo';
+  num.value=String(Math.round(accBalance(a)*100)/100).replace('.',',');
+  num.addEventListener('change',()=>{
+    const v=parseFloat(String(num.value).replace(',','.'))||0;
+    a.start=v-accDelta(a.id);save();renderHomeSoft();toast('Saldo herijkt');
+  });
+  const rm=el('button','rm','✕');rm.setAttribute('aria-label','Verwijderen');
+  rm.addEventListener('click',()=>{
+    if(S.accounts.length<=1){toast('Minstens één rekening nodig');return;}
+    S.accounts.splice(S.accounts.indexOf(a),1);
+    const first=S.accounts[0].id;
+    S.tx.forEach(t=>{if(t.accountId===a.id)t.accountId=first;});
+    save();renderSettings();renderHomeSoft();
+  });
+  row.append(em,name,num,rm);return row;
 }
 // second row for recurring: envelope selector
 function editorRow2(item){
@@ -733,7 +783,8 @@ document.querySelectorAll('.add-row').forEach(b=>b.addEventListener('click',()=>
   if(k==='fixed')S.fixed.push({id:uid(),name:'',amount:0});
   if(k==='rec')S.recurring.push({id:uid(),name:'',amount:0,day:1,envId:null});
   if(k==='env')S.envelopes.push({id:uid(),emoji:'🎯',name:'',budget:0,ci:S.envelopes.length%PAL.length});
-  if(k==='goal')S.goals.push({id:uid(),emoji:'🏦',name:'',target:0});
+  if(k==='goal')S.goals.push({id:uid(),emoji:'🎯',name:'',target:0});
+  if(k==='acc')S.accounts.push({id:uid(),emoji:'💳',name:'',start:0});
   save();renderSettings();
 }));
 
@@ -754,7 +805,7 @@ $('#prevM').addEventListener('click',()=>{viewMonth=shiftMonth(viewMonth,-1);ren
 $('#nextM').addEventListener('click',()=>{viewMonth=shiftMonth(viewMonth,1);renderTx();});
 
 /* ---------- add / edit sheet ---------- */
-let selEnv=null,selGoal=null,sheetKind='out',amtStr='',splitOn=false,editId=null;
+let selEnv=null,selGoal=null,selAcc=null,sheetKind='out',amtStr='',splitOn=false,editId=null;
 function amtVal(){return parseFloat(amtStr.replace(',','.'))||0;}
 function renderAmt(){
   const d=$('#amtDisplay');
@@ -817,17 +868,28 @@ function renderChips(){
     mk('Overig',()=>{selEnv=null;renderChips();},selEnv===null);
   }
 }
+function renderAccChips(){
+  const c=$('#accChips');c.innerHTML='';
+  if(sheetKind==='save'||S.accounts.length<2){c.style.display='none';return;}
+  c.style.display='';
+  S.accounts.forEach(a=>{
+    const ch=el('button','chip'+(a.id===selAcc?' sel':''),esc(a.emoji)+' '+esc(a.name||'?'));
+    ch.addEventListener('click',()=>{selAcc=a.id;renderAccChips();});
+    c.appendChild(ch);
+  });
+}
 function openAdd(o={}){
   editId=null;sheetKind=o.kind||'out';selEnv=o.envId??null;selGoal=o.goalId??null;
+  selAcc=o.accountId??(S.accounts.some(a=>a.id===S.lastAcc)?S.lastAcc:(S.accounts[0]&&S.accounts[0].id));
   amtStr='';splitOn=false;splitBtn.classList.remove('on');
   splitBtn.style.display=sheetKind==='out'?'':'none';
   $('#sheetTitle').textContent=sheetKind==='in'?'Extra inkomst':sheetKind==='save'?'Sparen':'Nieuwe uitgave';
-  renderChips();renderQuick();renderAmt();
+  renderChips();renderAccChips();renderQuick();renderAmt();
   $('#noteInput').value='';$('#dateInput').value=todayStr();
   $('#scrim').classList.add('open');$('#addSheet').classList.add('open');
 }
 function openEdit(t){
-  openAdd({kind:t.kind,envId:t.envId,goalId:t.goalId});
+  openAdd({kind:t.kind,envId:t.envId,goalId:t.goalId,accountId:txAcc(t)});
   editId=t.id;
   amtStr=String(t.amount).replace('.',',');
   $('#sheetTitle').textContent='Bewerken';
@@ -848,16 +910,18 @@ $('#saveTx').addEventListener('click',()=>{
   const note=$('#noteInput').value.trim(),date=$('#dateInput').value||todayStr();
   if(editId){
     const t=S.tx.find(x=>x.id===editId);
-    if(t){t.amount=amt;t.envId=sheetKind==='out'?selEnv:null;t.goalId=sheetKind==='save'?selGoal:undefined;t.note=note;t.date=date;}
+    if(t){t.amount=amt;t.envId=sheetKind==='out'?selEnv:null;t.goalId=sheetKind==='save'?selGoal:undefined;if(sheetKind!=='save')t.accountId=selAcc;t.note=note;t.date=date;}
     toast('Aangepast');
   }else{
     S.tx.push({id:uid(),amount:amt,
       envId:sheetKind==='out'?selEnv:null,
       goalId:sheetKind==='save'?selGoal:undefined,
+      accountId:sheetKind!=='save'?selAcc:undefined,
       note,date,ts:Date.now(),kind:sheetKind,
       ...(split?{split:true}:{})});
     toast(sheetKind==='in'?'Inkomst toegevoegd':sheetKind==='save'?'Gespaard 🎉':split?'Jouw helft toegevoegd':'Uitgave toegevoegd');
   }
+  if(sheetKind!=='save')S.lastAcc=selAcc;
   save();closeSheet();renderAll();
 });
 
@@ -883,6 +947,8 @@ $('#importFile').addEventListener('change',e=>{
     S=d;S.tx.forEach(t=>{if(!t.kind)t.kind='out';});
     S.envelopes.forEach((e2,i)=>{if(e2.ci==null)e2.ci=i%PAL.length;});
     S.recurring??=[];S.goals??=[];S.rollover??=false;
+    S.accounts??=[{id:uid(),emoji:'🏦',name:'Zichtrekening',start:0}];
+    if(!S.accounts.length)S.accounts.push({id:uid(),emoji:'🏦',name:'Zichtrekening',start:0});
     S.startMonth??=todayStr().slice(0,7);S.recDone??=todayStr();
     save();applyTheme();renderAll();renderSettings();toast('Back-up hersteld');
   }catch(err){toast('Ongeldig bestand');}};
