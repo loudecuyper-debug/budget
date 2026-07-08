@@ -9,8 +9,8 @@
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Budget">
-<link rel="icon" href="icon.png">
-<link rel="apple-touch-icon" href="icon.png">
+<link rel="icon" href="icon.png?v=3">
+<link rel="apple-touch-icon" href="icon.png?v=3">
 <link rel="manifest" href="manifest.json">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -400,7 +400,11 @@ const PAL=[
   ['#DCEDE0','#3E7C59'],['#F6E8CB','#C8862A'],['#E6E3F4','#6C5FB3'],['#F6DFDD','#C05B54'],
   ['#DCEAF2','#3E7C9C'],['#E9EDD0','#7A8A2E'],['#F0E0EE','#A0559A'],['#F2E2D4','#B06A38']
 ];
-const todayStr=()=>{const d=new Date();return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');};
+const dateStr=d=>d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
+const todayStr=()=>dateStr(new Date());
+const dimOf=d=>new Date(d.getFullYear(),d.getMonth()+1,0).getDate();
+const defaultAccount=()=>({id:uid(),emoji:'🏦',name:'Zichtrekening',start:0});
+const $$=s=>document.querySelectorAll(s);
 
 const defaultState=()=>({
   theme:'light',
@@ -413,19 +417,22 @@ const defaultState=()=>({
     {id:uid(),emoji:'🚋',name:'Vervoer',budget:50,ci:4}
   ],
   recurring:[],goals:[],rollover:false,
-  accounts:[{id:uid(),emoji:'🏦',name:'Zichtrekening',start:0}],
+  accounts:[defaultAccount()],
   startMonth:todayStr().slice(0,7),recDone:todayStr(),
   tx:[]
 });
-let S=store.load()||defaultState();
-// migrate older saves
-if(!Array.isArray(S.tx))S.tx=[];
-S.tx.forEach(t=>{if(!t.kind)t.kind='out';});
-S.envelopes.forEach((e,i)=>{if(e.ci==null)e.ci=i%PAL.length;});
-S.recurring??=[];S.goals??=[];S.rollover??=false;
-S.accounts??=[{id:uid(),emoji:'🏦',name:'Zichtrekening',start:0}];
-if(!S.accounts.length)S.accounts.push({id:uid(),emoji:'🏦',name:'Zichtrekening',start:0});
-S.startMonth??=todayStr().slice(0,7);S.recDone??=todayStr();
+// migrate older saves (also used by import)
+function migrate(d){
+  if(!Array.isArray(d.tx))d.tx=[];
+  d.tx.forEach(t=>{if(!t.kind)t.kind='out';});
+  d.envelopes.forEach((e,i)=>{if(e.ci==null)e.ci=i%PAL.length;});
+  d.recurring??=[];d.goals??=[];d.rollover??=false;
+  d.accounts??=[defaultAccount()];
+  if(!d.accounts.length)d.accounts.push(defaultAccount());
+  d.startMonth??=todayStr().slice(0,7);d.recDone??=todayStr();
+  return d;
+}
+let S=migrate(store.load()||defaultState());
 const save=()=>store.save(S);
 
 const fmt=n=>'€\u00A0'+(n||0).toLocaleString('nl-BE',{minimumFractionDigits:2,maximumFractionDigits:2});
@@ -463,6 +470,10 @@ function effBudget(env,m){
   return b+carry;
 }
 
+/* recurring: shared due-check + tx factory */
+const recDue=(r,d,dim)=>{const day=Number(r.day)||1;return day===d.getDate()||(d.getDate()===dim&&day>dim);};
+const recTx=(r,date)=>({id:uid(),amount:Number(r.amount)||0,envId:r.envId||null,note:r.name||'Terugkerend',date,ts:Date.now(),kind:'out',rec:true,rid:r.id});
+
 /* recurring: materialize missed occurrences since last open */
 function processRecurring(){
   const today=todayStr();
@@ -471,13 +482,10 @@ function processRecurring(){
   let changed=false,guard=0;
   while(d<end&&guard++<800){
     d.setDate(d.getDate()+1);
-    const ds=d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
-    const dim=new Date(d.getFullYear(),d.getMonth()+1,0).getDate();
+    const ds=dateStr(d),dim=dimOf(d);
     S.recurring.forEach(r=>{
-      const amt=Number(r.amount)||0,day=Number(r.day)||1;
-      const due=day===d.getDate()||(d.getDate()===dim&&day>dim);
-      if(due&&amt>0){
-        S.tx.push({id:uid(),amount:amt,envId:r.envId||null,note:r.name||'Terugkerend',date:ds,ts:Date.now(),kind:'out',rec:true,rid:r.id});
+      if(recDue(r,d,dim)&&(Number(r.amount)||0)>0){
+        S.tx.push(recTx(r,ds));
         changed=true;
       }
     });
@@ -487,15 +495,12 @@ function processRecurring(){
   save();
 }
 function recCheckToday(){
-  const today=todayStr(),d=new Date(today+'T12:00');
-  const dim=new Date(d.getFullYear(),d.getMonth()+1,0).getDate();
+  const today=todayStr(),d=new Date(today+'T12:00'),dim=dimOf(d);
   let changed=false;
   S.recurring.forEach(r=>{
-    const amt=Number(r.amount)||0,day=Number(r.day)||1;
-    const due=day===d.getDate()||(d.getDate()===dim&&day>dim);
     const exists=S.tx.some(t=>t.rec&&t.date===today&&(t.rid===r.id||t.note===(r.name||'Terugkerend')));
-    if(due&&amt>0&&!exists){
-      S.tx.push({id:uid(),amount:amt,envId:r.envId||null,note:r.name||'Terugkerend',date:today,ts:Date.now(),kind:'out',rec:true,rid:r.id});
+    if(recDue(r,d,dim)&&(Number(r.amount)||0)>0&&!exists){
+      S.tx.push(recTx(r,today));
       changed=true;
     }
   });
@@ -515,6 +520,7 @@ function toast(msg,undo){
   toastT=setTimeout(()=>t.classList.remove('show'),undo?4500:1900);
 }
 
+const raf2=fn=>requestAnimationFrame(()=>requestAnimationFrame(fn));
 const countUp=(node,target)=>{
   const prev=Number(node.dataset.prev||0);node.dataset.prev=target;
   if(matchMedia('(prefers-reduced-motion: reduce)').matches){node.textContent=fmt(target);return;}
@@ -560,7 +566,7 @@ function renderHome(){
       <div class="nums"><b>${fmt(spent)}</b> / ${fmt(eff)}</div><div class="bar"><i></i></div>`;
     card.addEventListener('click',()=>openAdd({envId:env.id}));
     grid.appendChild(card);
-    requestAnimationFrame(()=>requestAnimationFrame(()=>{card.querySelector('.bar i').style.width=Math.min(100,pct*100)+'%';}));
+    raf2(()=>{card.querySelector('.bar i').style.width=Math.min(100,pct*100)+'%';});
   });
   // goals
   const gs=$('#goalsSection');
@@ -576,7 +582,7 @@ function renderHome(){
       <div class="pct">${Math.min(999,Math.round(pct*100))}%</div>`;
     card.addEventListener('click',()=>openAdd({goalId:g.id,kind:'save'}));
     gl.appendChild(card);
-    requestAnimationFrame(()=>requestAnimationFrame(()=>{card.querySelector('.bar i').style.width=Math.min(100,pct*100)+'%';}));
+    raf2(()=>{card.querySelector('.bar i').style.width=Math.min(100,pct*100)+'%';});
   });
   const al=$('#accList');al.innerHTML='';let nw=0;
   S.accounts.forEach(a=>{
@@ -613,7 +619,7 @@ function renderCharts(m,T){
     c.setAttribute('stroke-dashoffset',-off);
     c.setAttribute('stroke-linecap',segs.length>1?'butt':'round');
     svg.appendChild(c);
-    requestAnimationFrame(()=>requestAnimationFrame(()=>c.setAttribute('stroke-dasharray',Math.max(0,len-2)+' '+C)));
+    raf2(()=>c.setAttribute('stroke-dasharray',Math.max(0,len-2)+' '+C));
     off+=len;
   });
   $('#donutTot').textContent=fmtS(tot);
@@ -629,7 +635,7 @@ function renderCharts(m,T){
     const b=el('div','b'+(v>0?' has':'')+(isCur&&i+1===td?' today':''));
     b.title=(i+1)+': '+fmtS(v);
     bars.appendChild(b);
-    requestAnimationFrame(()=>requestAnimationFrame(()=>{b.style.height=Math.max(4,(v/max)*90)+'px';}));
+    raf2(()=>{b.style.height=Math.max(4,(v/max)*90)+'px';});
   });
   $('#barsMid').textContent=Math.round(dim/2);$('#barsEnd').textContent=dim;
   // comparison vs previous month
@@ -815,7 +821,7 @@ function editorRow2(item){
   return row;
 }
 $('#rolloverToggle').addEventListener('change',e=>{S.rollover=e.target.checked;save();renderHomeSoft();toast(S.rollover?'Restjes worden overgedragen':'Overdracht uit');});
-document.querySelectorAll('.add-row').forEach(b=>b.addEventListener('click',()=>{
+$$('.add-row').forEach(b=>b.addEventListener('click',()=>{
   const k=b.dataset.add;
   if(k==='income')S.incomes.push({id:uid(),name:'',amount:0});
   if(k==='fixed')S.fixed.push({id:uid(),name:'',amount:0});
@@ -831,17 +837,17 @@ document.querySelectorAll('.add-row').forEach(b=>b.addEventListener('click',()=>
 
 /* ---------- nav ---------- */
 function show(tab){
-  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  $$('.view').forEach(v=>v.classList.remove('active'));
   $('#view-'+tab).classList.add('active');
-  document.querySelectorAll('nav .tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===tab));
+  $$('nav .tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===tab));
   if(tab==='home')renderHome();if(tab==='tx')renderTx();if(tab==='settings')renderSettings();
   window.scrollTo({top:0});
 }
-document.querySelectorAll('nav .tab').forEach(t=>t.addEventListener('click',()=>{
+$$('nav .tab').forEach(t=>t.addEventListener('click',()=>{
   if(t.dataset.tab==='income'){openAdd({kind:'in'});t.classList.add('active');return;}
   show(t.dataset.tab);
 }));
-document.querySelectorAll('[data-goto]').forEach(b=>b.addEventListener('click',()=>show(b.dataset.goto)));
+$$('[data-goto]').forEach(b=>b.addEventListener('click',()=>show(b.dataset.goto)));
 $('#prevM').addEventListener('click',()=>{viewMonth=shiftMonth(viewMonth,-1);renderTx();});
 $('#nextM').addEventListener('click',()=>{viewMonth=shiftMonth(viewMonth,1);renderTx();});
 $('#monthLabel').addEventListener('click',()=>{const cur=todayStr().slice(0,7);if(viewMonth!==cur){viewMonth=cur;renderTx();}});
@@ -942,7 +948,7 @@ function openEdit(t){
 function closeSheet(){
   $('#scrim').classList.remove('open');$('#addSheet').classList.remove('open');
   const cur=document.querySelector('.view.active').id.replace('view-','');
-  document.querySelectorAll('nav .tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===cur));
+  $$('nav .tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===cur));
 }
 const sheetEl=$('#addSheet');let dragY=null,dragDelta=0;
 sheetEl.addEventListener('touchstart',e=>{
@@ -1006,12 +1012,7 @@ $('#importFile').addEventListener('change',e=>{
   const r=new FileReader();
   r.onload=()=>{try{
     const d=JSON.parse(r.result);if(!d.envelopes||!d.tx)throw 0;
-    S=d;S.tx.forEach(t=>{if(!t.kind)t.kind='out';});
-    S.envelopes.forEach((e2,i)=>{if(e2.ci==null)e2.ci=i%PAL.length;});
-    S.recurring??=[];S.goals??=[];S.rollover??=false;
-    S.accounts??=[{id:uid(),emoji:'🏦',name:'Zichtrekening',start:0}];
-    if(!S.accounts.length)S.accounts.push({id:uid(),emoji:'🏦',name:'Zichtrekening',start:0});
-    S.startMonth??=todayStr().slice(0,7);S.recDone??=todayStr();
+    S=migrate(d);
     save();applyTheme();renderAll();renderSettings();toast('Back-up hersteld');
   }catch(err){toast('Ongeldig bestand');}};
   r.readAsText(f);e.target.value='';
