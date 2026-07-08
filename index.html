@@ -83,7 +83,7 @@ header.top{display:flex; align-items:center; justify-content:space-between; padd
 
 /* envelopes + goals */
 .env-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;}
-.env-card{border-radius:var(--r-lg);padding:16px 15px 14px;text-align:left;background:var(--c-soft);transition:transform .15s;}
+.env-card{border-radius:var(--r-lg);padding:16px 15px 14px;text-align:left;background:var(--c-soft);transition:transform .15s;-webkit-touch-callout:none;-webkit-user-select:none;user-select:none;}
 [data-theme="dark"] .env-card{background:color-mix(in srgb, var(--c-strong) 20%, var(--surface));}
 .env-card:active{transform:scale(.96);}
 .env-card .emoji{font-size:24px;}
@@ -239,6 +239,20 @@ nav.bottom .tab.active{color:var(--pine);}
 .toast{position:fixed;left:50%;bottom:calc(var(--nav-h) + 20px);transform:translateX(-50%) translateY(20px);background:var(--ink);color:var(--bg);padding:10px 18px;border-radius:99px;font-size:14px;font-weight:700;opacity:0;pointer-events:none;z-index:80;transition:all .3s;white-space:nowrap;display:flex;gap:14px;align-items:center;}
 .toast.show{opacity:1;transform:translateX(-50%);pointer-events:auto;}
 .toast button{color:var(--honey);font-weight:800;text-decoration:underline;}
+/* envelope detail sheet */
+.env-stats{margin:6px 0 14px;}
+.trend-bars{position:relative;display:flex;align-items:flex-end;gap:8px;height:96px;margin-top:6px;}
+.trend-bars .tb{flex:1;border-radius:7px 7px 4px 4px;background:var(--c-strong,var(--pine));min-height:3px;height:3px;transition:height .7s cubic-bezier(.22,1,.36,1);}
+.trend-bars .tb.zero{background:var(--surface2);}
+.trend-bars .tb.cur{outline:2.5px solid var(--honey);outline-offset:1px;}
+.trend-bars .bline{position:absolute;left:-4px;right:-4px;border-top:2px dashed var(--muted);opacity:.5;pointer-events:none;}
+.trend-x{display:flex;gap:8px;margin-top:6px;}
+.trend-x span{flex:1;text-align:center;font-size:11px;color:var(--muted);font-weight:600;text-transform:capitalize;}
+.trend-x span b{display:block;font-size:10.5px;color:var(--ink);font-variant-numeric:tabular-nums;font-weight:700;}
+.sheet .sub-h{font-size:12.5px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--muted);margin:20px 0 8px;text-align:left;}
+.env-hint{font-size:12px;color:var(--muted);text-align:center;margin:14px 0 0;}
+.legend .li.tap{cursor:pointer;}
+.legend .li.tap:active{opacity:.6;}
 @media (prefers-reduced-motion:reduce){*,*::before,*::after{animation-duration:.01ms!important;transition-duration:.01ms!important;}}
 </style>
 </head>
@@ -382,6 +396,17 @@ nav.bottom .tab.active{color:var(--pine);}
   </div>
   <div class="keypad" id="keypad"></div>
   <button class="btn primary" id="saveTx">Opslaan</button>
+</div>
+
+<div class="sheet" id="envSheet" role="dialog" aria-label="Potje detail">
+  <div class="grip"></div>
+  <h2 id="envSheetTitle"></h2>
+  <div class="env-stats" id="envStats"></div>
+  <div class="trend-bars" id="envTrendBars"></div>
+  <div class="trend-x" id="envTrendX"></div>
+  <div class="sub-h">Deze maand</div>
+  <div id="envTxList"></div>
+  <p class="env-hint">Bewerken of verwijderen kan via het Uitgaven-tab.</p>
 </div>
 
 <div class="toast" id="toast"></div>
@@ -564,7 +589,12 @@ function renderHome(){
     card.style.cssText=envStyle(env);
     card.innerHTML=`<div class="emoji">${esc(env.emoji)}</div><div class="name">${esc(env.name)}</div>
       <div class="nums"><b>${fmt(spent)}</b> / ${fmt(eff)}</div><div class="bar"><i></i></div>`;
-    card.addEventListener('click',()=>openAdd({envId:env.id}));
+    let lpT=null,lpFired=false;
+    card.addEventListener('touchstart',()=>{lpFired=false;lpT=setTimeout(()=>{lpFired=true;openEnvDetail(env);},450);},{passive:true});
+    card.addEventListener('touchmove',()=>clearTimeout(lpT),{passive:true});
+    card.addEventListener('touchend',()=>clearTimeout(lpT));
+    card.addEventListener('contextmenu',e=>{e.preventDefault();openEnvDetail(env);});
+    card.addEventListener('click',()=>{if(lpFired){lpFired=false;return;}openAdd({envId:env.id});});
     grid.appendChild(card);
     raf2(()=>{card.querySelector('.bar i').style.width=Math.min(100,pct*100)+'%';});
   });
@@ -606,7 +636,7 @@ function renderCharts(m,T){
   tx.forEach(t=>per.set(t.envId,(per.get(t.envId)||0)+t.amount));
   const segs=[...per.entries()].map(([id,v])=>{
     const e=envById(id);
-    return{v,col:e?PAL[e.ci][1]:'#9AA79F',name:e?e.name:'Overig',emoji:e?e.emoji:'💸'};
+    return{v,id,col:e?PAL[e.ci][1]:'#9AA79F',name:e?e.name:'Overig',emoji:e?e.emoji:'💸'};
   }).sort((a,b)=>b.v-a.v);
   const R=58,C=2*Math.PI*R,tot=T.out;
   const svg=$('#donutSvg');svg.innerHTML='';let off=0;
@@ -625,7 +655,10 @@ function renderCharts(m,T){
   $('#donutTot').textContent=fmtS(tot);
   const lg=$('#legend');lg.innerHTML='';
   segs.slice(0,5).forEach(s=>{
-    lg.appendChild(el('div','li',`<span class="sw" style="background:${s.col}"></span><span class="nm">${esc(s.emoji)} ${esc(s.name)}</span><span class="v">${fmtS(s.v)}</span>`));
+    const e=envById(s.id);
+    const li=el('div','li'+(e?' tap':''),`<span class="sw" style="background:${s.col}"></span><span class="nm">${esc(s.emoji)} ${esc(s.name)}</span><span class="v">${fmtS(s.v)}</span>`);
+    if(e)li.addEventListener('click',()=>openEnvDetail(e));
+    lg.appendChild(li);
   });
   const dim=daysInMonth(m),perDay=Array(dim).fill(0);
   tx.forEach(t=>{perDay[Number(t.date.slice(8))-1]+=t.amount;});
@@ -950,24 +983,28 @@ function closeSheet(){
   const cur=document.querySelector('.view.active').id.replace('view-','');
   $$('nav .tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===cur));
 }
-const sheetEl=$('#addSheet');let dragY=null,dragDelta=0;
-sheetEl.addEventListener('touchstart',e=>{
-  if(sheetEl.scrollTop>0||e.target.closest('input,select'))return;
-  dragY=e.touches[0].clientY;dragDelta=0;
-},{passive:true});
-sheetEl.addEventListener('touchmove',e=>{
-  if(dragY==null)return;
-  dragDelta=e.touches[0].clientY-dragY;
-  if(dragDelta>0){sheetEl.style.transition='none';sheetEl.style.transform=`translateY(${dragDelta}px)`;}
-},{passive:true});
-sheetEl.addEventListener('touchend',()=>{
-  if(dragY==null)return;
-  sheetEl.style.transition='';sheetEl.style.transform='';
-  if(dragDelta>90)closeSheet();
-  dragY=null;dragDelta=0;
-});
+function attachSheetDrag(sheet,close){
+  let dragY=null,dragDelta=0;
+  sheet.addEventListener('touchstart',e=>{
+    if(sheet.scrollTop>0||e.target.closest('input,select'))return;
+    dragY=e.touches[0].clientY;dragDelta=0;
+  },{passive:true});
+  sheet.addEventListener('touchmove',e=>{
+    if(dragY==null)return;
+    dragDelta=e.touches[0].clientY-dragY;
+    if(dragDelta>0){sheet.style.transition='none';sheet.style.transform=`translateY(${dragDelta}px)`;}
+  },{passive:true});
+  sheet.addEventListener('touchend',()=>{
+    if(dragY==null)return;
+    sheet.style.transition='';sheet.style.transform='';
+    if(dragDelta>90)close();
+    dragY=null;dragDelta=0;
+  });
+}
+attachSheetDrag($('#addSheet'),closeSheet);
+attachSheetDrag($('#envSheet'),closeEnvSheet);
 $('#fabAdd').addEventListener('click',()=>openAdd({kind:'out'}));
-$('#scrim').addEventListener('click',closeSheet);
+$('#scrim').addEventListener('click',()=>{closeSheet();closeEnvSheet();});
 $('#saveTx').addEventListener('click',()=>{
   let amt=amtVal();
   if(!amt||amt<=0){toast('Vul een bedrag in');return;}
@@ -992,6 +1029,44 @@ $('#saveTx').addEventListener('click',()=>{
   S.lastAcc=selAcc;
   save();closeSheet();renderAll();
 });
+
+/* ---------- envelope detail ---------- */
+function openEnvDetail(env){
+  const m=todayStr().slice(0,7);
+  $('#envSheetTitle').textContent=`${env.emoji} ${env.name||'Potje'}`;
+  const spent=envSpent(m,env.id),eff=effBudget(env,m),left=eff-spent;
+  const st=$('#envStats');st.innerHTML='';
+  st.appendChild(el('div','summary-line',`<span>Uitgegeven</span><b>${fmt(spent)}</b>`));
+  st.appendChild(el('div','summary-line',`<span>Budget deze maand</span><b>${fmt(eff)}</b>`));
+  st.appendChild(el('div','summary-line free',`<span>Over</span><b${left<0?' style="color:var(--brick)"':''}>${fmt(left)}</b>`));
+  const bars=$('#envTrendBars'),xs=$('#envTrendX');bars.innerHTML='';xs.innerHTML='';
+  bars.style.cssText=envStyle(env);
+  const months=[];for(let i=5;i>=0;i--)months.push(shiftMonth(m,-i));
+  const vals=months.map(k=>envSpent(k,env.id));
+  const base=Number(env.budget)||0;
+  const max=Math.max(...vals,base,1);
+  if(base>0){const bl=el('div','bline');bl.style.bottom=Math.min(94,(base/max)*96)+'px';bars.appendChild(bl);}
+  months.forEach((k,i)=>{
+    const b=el('div','tb'+(vals[i]<=0?' zero':'')+(k===m?' cur':''));
+    b.title=monthName(k)+': '+fmtS(vals[i]);
+    bars.appendChild(b);
+    raf2(()=>{b.style.height=Math.max(3,(vals[i]/max)*96)+'px';});
+    xs.appendChild(el('span',null,`${new Date(k+'-01T12:00').toLocaleDateString('nl-BE',{month:'short'})}<b>${fmtS(vals[i])}</b>`));
+  });
+  const list=$('#envTxList');list.innerHTML='';
+  const tx=txInMonth(m).filter(t=>t.kind==='out'&&t.envId===env.id).sort((a,b)=>b.date.localeCompare(a.date)||b.ts-a.ts);
+  if(!tx.length)list.appendChild(el('div','empty','<div class="big">🌱</div>Nog niets uitgegeven deze maand.'));
+  tx.forEach(t=>{
+    const row=el('div','tx-row');row.style.cssText=envStyle(env);
+    row.innerHTML=`<div class="em">${esc(env.emoji)}</div>
+      <div class="info"><div class="t">${esc(t.note||env.name)}</div>
+      <div class="c">${new Date(t.date+'T12:00').toLocaleDateString('nl-BE',{day:'numeric',month:'short'})}${t.split?' · ½ gedeeld':''}${t.rec?' · 🔁':''}</div></div>
+      <div class="amt">−${fmt(t.amount)}</div>`;
+    list.appendChild(row);
+  });
+  $('#scrim').classList.add('open');$('#envSheet').classList.add('open');
+}
+function closeEnvSheet(){$('#scrim').classList.remove('open');$('#envSheet').classList.remove('open');}
 
 /* ---------- theme / backup ---------- */
 const applyTheme=()=>{
